@@ -1,11 +1,19 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 import 'dart:math' as math;
+import 'dart:typed_data';
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:bighead/remote_backend.dart';
 
 void main() {
-  runApp(const BigHeadApp());
+  WidgetsFlutterBinding.ensureInitialized();
+  AppDatabase.instance.hydrate().whenComplete(() {
+    runApp(const BigHeadApp());
+  });
 }
 
 enum AppLanguage { en, fa }
@@ -21,16 +29,28 @@ class _BigHeadAppState extends State<BigHeadApp> {
   ThemeMode _themeMode = ThemeMode.light;
   AppLanguage _language = AppLanguage.en;
 
+  @override
+  void initState() {
+    super.initState();
+    final darkMode =
+        AppDatabase.instance.getSetting<bool>('darkMode', false) ?? false;
+    final language = AppDatabase.instance.getSetting<String>('language', 'en') ?? 'en';
+    _themeMode = darkMode ? ThemeMode.dark : ThemeMode.light;
+    _language = language == 'fa' ? AppLanguage.fa : AppLanguage.en;
+  }
+
   void _toggleTheme(bool isDark) {
     setState(() {
       _themeMode = isDark ? ThemeMode.dark : ThemeMode.light;
     });
+    AppDatabase.instance.setSetting('darkMode', isDark);
   }
 
   void _setLanguage(AppLanguage language) {
     setState(() {
       _language = language;
     });
+    AppDatabase.instance.setSetting('language', language == AppLanguage.fa ? 'fa' : 'en');
   }
 
   @override
@@ -46,11 +66,15 @@ class _BigHeadAppState extends State<BigHeadApp> {
             _language == AppLanguage.fa ? TextDirection.rtl : TextDirection.ltr;
         return Directionality(textDirection: textDirection, child: child!);
       },
-      home: HomeShell(
-        themeMode: _themeMode,
-        onThemeChanged: _toggleTheme,
-        language: _language,
-        onLanguageChanged: _setLanguage,
+      home: ValueListenableBuilder<AccountProfile?>(
+        valueListenable: AppDatabase.instance.currentUserNotifier,
+        builder: (context, auth, _) => HomeShell(
+          themeMode: _themeMode,
+          onThemeChanged: _toggleTheme,
+          language: _language,
+          onLanguageChanged: _setLanguage,
+          authenticated: auth != null,
+        ),
       ),
     );
   }
@@ -290,12 +314,14 @@ class HomeShell extends StatefulWidget {
     required this.onThemeChanged,
     required this.language,
     required this.onLanguageChanged,
+    required this.authenticated,
   });
 
   final ThemeMode themeMode;
   final ValueChanged<bool> onThemeChanged;
   final AppLanguage language;
   final ValueChanged<AppLanguage> onLanguageChanged;
+  final bool authenticated;
 
   @override
   State<HomeShell> createState() => _HomeShellState();
@@ -331,6 +357,14 @@ class _HomeShellState extends State<HomeShell> {
       ProfileScreen(palette: palette, strings: strings),
     ];
 
+    if (!widget.authenticated) {
+      return AuthScreen(
+        palette: palette,
+        strings: strings,
+        onLanguageChanged: widget.onLanguageChanged,
+      );
+    }
+
     return Scaffold(
       body: Stack(
         children: [
@@ -342,8 +376,26 @@ class _HomeShellState extends State<HomeShell> {
                   palette: palette,
                   strings: strings,
                   onSearchTap: () {},
-                  onQrTap: () {},
-                  onNotifyTap: () {},
+                  onQrTap: () {
+                    Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => MyQrScreen(
+                          palette: palette,
+                          strings: strings,
+                        ),
+                      ),
+                    );
+                  },
+                  onNotifyTap: () {
+                    Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => NotificationsCenterScreen(
+                          palette: palette,
+                          strings: strings,
+                        ),
+                      ),
+                    );
+                  },
                 ),
                 Expanded(child: pages[_selectedIndex]),
               ],
@@ -364,6 +416,313 @@ class _HomeShellState extends State<HomeShell> {
         ],
       ),
     );
+  }
+}
+
+class AuthScreen extends StatefulWidget {
+  const AuthScreen({
+    super.key,
+    required this.palette,
+    required this.strings,
+    required this.onLanguageChanged,
+  });
+
+  final BigHeadPalette palette;
+  final AppStrings strings;
+  final ValueChanged<AppLanguage> onLanguageChanged;
+
+  @override
+  State<AuthScreen> createState() => _AuthScreenState();
+}
+
+class _AuthScreenState extends State<AuthScreen> {
+  bool loading = false;
+  bool _emailMode = false;
+  bool _registerMode = false;
+  final TextEditingController _nameController = TextEditingController();
+  final TextEditingController _emailController = TextEditingController();
+  final TextEditingController _passwordController = TextEditingController();
+  final TextEditingController _serverController = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _serverController.text = AppDatabase.instance.serverBaseUrl;
+  }
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _emailController.dispose();
+    _passwordController.dispose();
+    _serverController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final p = widget.palette;
+    final s = widget.strings;
+    return Scaffold(
+      body: Stack(
+        children: [
+          BigHeadBackground(palette: p),
+          SafeArea(
+            child: Center(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(20),
+                child: Container(
+                  constraints: const BoxConstraints(maxWidth: 420),
+                  padding: const EdgeInsets.all(18),
+                  decoration: BoxDecoration(
+                    color: p.card,
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: p.border),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          const BigHeadLogo(size: 42),
+                          const SizedBox(width: 10),
+                          Text(
+                            s.appName,
+                            style: Theme.of(context)
+                                .textTheme
+                                .titleLarge
+                                ?.copyWith(color: p.ink),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      Text(
+                        _emailMode
+                            ? (s.isFa ? 'ورود یا ثبت‌نام با ایمیل' : 'Sign in or register with email')
+                            : (s.isFa
+                                ? 'ورود یا ثبت نام با گوگل'
+                                : 'Sign in or register with Google'),
+                        style: Theme.of(context)
+                            .textTheme
+                            .bodyMedium
+                            ?.copyWith(color: p.muted),
+                      ),
+                      const SizedBox(height: 14),
+                      TextField(
+                        controller: _serverController,
+                        enabled: !loading,
+                        keyboardType: TextInputType.url,
+                        decoration: InputDecoration(
+                          labelText: s.isFa ? 'آدرس سرور (اختیاری)' : 'Server URL (optional)',
+                          hintText: 'http://192.168.1.10:8080',
+                        ),
+                        onChanged: (value) {
+                          AppDatabase.instance.setServerBaseUrl(value);
+                        },
+                      ),
+                      const SizedBox(height: 10),
+                      if (!_emailMode)
+                        SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton.icon(
+                            icon: const Icon(Icons.login),
+                            onPressed: loading
+                                ? null
+                                : () async {
+                                    setState(() => loading = true);
+                                    final ok = await AppDatabase.instance.signInWithGoogle();
+                                    if (mounted) {
+                                      setState(() => loading = false);
+                                      if (!ok) {
+                                        final authError =
+                                            AppDatabase.instance.consumeLastAuthError() ?? 'UNKNOWN';
+                                        final errorText = _googleAuthErrorText(
+                                          error: authError,
+                                          isFa: s.isFa,
+                                        );
+                                        ScaffoldMessenger.of(context).showSnackBar(
+                                          SnackBar(
+                                            content: Text(errorText),
+                                          ),
+                                        );
+                                      }
+                                    }
+                                  },
+                            label: Text(
+                              s.isFa ? 'ورود با گوگل' : 'Continue with Google',
+                            ),
+                          ),
+                        ),
+                      if (_emailMode) ...[
+                        if (_registerMode) ...[
+                          TextField(
+                            controller: _nameController,
+                            enabled: !loading,
+                            decoration: InputDecoration(
+                              labelText: s.isFa ? 'نام نمایشی' : 'Display name',
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+                        ],
+                        TextField(
+                          controller: _emailController,
+                          enabled: !loading,
+                          keyboardType: TextInputType.emailAddress,
+                          decoration: InputDecoration(
+                            labelText: s.isFa ? 'ایمیل' : 'Email',
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        TextField(
+                          controller: _passwordController,
+                          enabled: !loading,
+                          obscureText: true,
+                          decoration: InputDecoration(
+                            labelText: s.isFa ? 'رمز عبور' : 'Password',
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton(
+                            onPressed: loading
+                                ? null
+                                : () async {
+                                    setState(() => loading = true);
+                                    final ok = _registerMode
+                                        ? await AppDatabase.instance.registerWithEmail(
+                                            email: _emailController.text,
+                                            password: _passwordController.text,
+                                            name: _nameController.text,
+                                          )
+                                        : await AppDatabase.instance.signInWithEmail(
+                                            email: _emailController.text,
+                                            password: _passwordController.text,
+                                          );
+                                    if (!mounted) return;
+                                    setState(() => loading = false);
+                                    if (!ok) {
+                                      final authError =
+                                          AppDatabase.instance.consumeLastAuthError() ?? 'UNKNOWN';
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        SnackBar(
+                                          content: Text(
+                                            _emailAuthErrorText(error: authError, isFa: s.isFa),
+                                          ),
+                                        ),
+                                      );
+                                    }
+                                  },
+                            child: Text(
+                              _registerMode
+                                  ? (s.isFa ? 'ثبت نام' : 'Register')
+                                  : (s.isFa ? 'ورود' : 'Sign in'),
+                            ),
+                          ),
+                        ),
+                      ],
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 8,
+                        children: [
+                          TextButton(
+                            onPressed: loading
+                                ? null
+                                : () => setState(() {
+                                      _emailMode = !_emailMode;
+                                      _registerMode = false;
+                                    }),
+                            child: Text(
+                              _emailMode
+                                  ? (s.isFa ? 'ورود با گوگل' : 'Use Google')
+                                  : (s.isFa ? 'ورود با ایمیل' : 'Use Email'),
+                            ),
+                          ),
+                          if (_emailMode)
+                            TextButton(
+                              onPressed: loading
+                                  ? null
+                                  : () => setState(() => _registerMode = !_registerMode),
+                              child: Text(
+                                _registerMode
+                                    ? (s.isFa ? 'حالت ورود' : 'Switch to Sign in')
+                                    : (s.isFa ? 'ایجاد حساب جدید' : 'Create account'),
+                              ),
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      Row(
+                        children: [
+                          TextButton(
+                            onPressed: () => widget.onLanguageChanged(AppLanguage.en),
+                            child: const Text('EN'),
+                          ),
+                          TextButton(
+                            onPressed: () => widget.onLanguageChanged(AppLanguage.fa),
+                            child: const Text('FA'),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _googleAuthErrorText({
+    required String error,
+    required bool isFa,
+  }) {
+    if (error == 'CANCELED') {
+      return isFa ? 'ورود توسط کاربر لغو شد.' : 'Google sign-in was canceled.';
+    }
+    if (error.startsWith('API_10')) {
+      return isFa
+          ? 'تنظیمات Google OAuth ناقص است (API_10).'
+          : 'Google OAuth is not configured correctly (API_10).';
+    }
+    if (error.startsWith('API_')) {
+      return isFa
+          ? 'خطای ورود گوگل: $error'
+          : 'Google sign-in failed: $error';
+    }
+    if (error == 'NO_EMAIL') {
+      return isFa ? 'ایمیل حساب گوگل دریافت نشد.' : 'No email returned from Google account.';
+    }
+    return isFa ? 'ورود با گوگل انجام نشد: $error' : 'Google sign-in failed: $error';
+  }
+
+  String _emailAuthErrorText({
+    required String error,
+    required bool isFa,
+  }) {
+    switch (error) {
+      case 'INVALID_EMAIL':
+        return isFa ? 'ایمیل معتبر نیست.' : 'Invalid email.';
+      case 'WEAK_PASSWORD':
+        return isFa ? 'رمز عبور باید حداقل ۶ کاراکتر باشد.' : 'Password must be at least 6 characters.';
+      case 'EMAIL_EXISTS':
+        return isFa ? 'این ایمیل قبلا ثبت شده است.' : 'This email is already registered.';
+      case 'EMAIL_NOT_FOUND':
+        return isFa ? 'اکانتی با این ایمیل پیدا نشد.' : 'No account found with this email.';
+      case 'WRONG_PASSWORD':
+        return isFa ? 'رمز عبور اشتباه است.' : 'Wrong password.';
+      case 'ACCOUNT_NOT_FOUND':
+        return isFa ? 'اطلاعات حساب ناقص است.' : 'Account data is missing.';
+      case 'SERVER_NOT_SET':
+        return isFa ? 'آدرس سرور را وارد کنید.' : 'Please enter server URL.';
+      case 'REGISTER_FAILED':
+      case 'LOGIN_FAILED':
+        return isFa ? 'ارتباط با سرور برقرار نشد.' : 'Could not reach server.';
+      default:
+        return isFa ? 'ورود با ایمیل انجام نشد: $error' : 'Email auth failed: $error';
+    }
   }
 }
 
@@ -856,6 +1215,7 @@ class Contact {
     required this.tags,
     required this.notes,
     this.favorite = false,
+    this.remoteUserId = '',
   });
 
   final String name;
@@ -869,6 +1229,126 @@ class Contact {
   final List<String> tags;
   final String notes;
   final bool favorite;
+  final String remoteUserId;
+}
+
+class AccountProfile {
+  const AccountProfile({
+    required this.email,
+    required this.name,
+    required this.phone,
+    required this.bio,
+    required this.qrCode,
+    this.avatarBase64,
+  });
+
+  final String email;
+  final String name;
+  final String phone;
+  final String bio;
+  final String qrCode;
+  final String? avatarBase64;
+}
+
+class AppPlatformService {
+  static const MethodChannel _channel = MethodChannel('bigheads/platform');
+
+  static Future<bool> sendEmailCode({
+    required String email,
+    required String code,
+  }) async {
+    try {
+      final sent = await _channel.invokeMethod<bool>(
+        'sendEmailCode',
+        <String, dynamic>{
+          'email': email,
+          'code': code,
+        },
+      );
+      return sent ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static Future<String?> pickImageBase64() async {
+    try {
+      return await _channel.invokeMethod<String>('pickImageBase64');
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static Future<Map<String, String>?> signInWithGoogle() async {
+    try {
+      final raw = await _channel.invokeMethod<dynamic>('signInWithGoogle');
+      if (raw is Map) {
+        return <String, String>{
+          'email': '${raw['email'] ?? ''}',
+          'name': '${raw['name'] ?? ''}',
+          'error': '${raw['error'] ?? ''}',
+        };
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static Future<void> signOutGoogle() async {
+    try {
+      await _channel.invokeMethod<void>('signOutGoogle');
+    } catch (_) {}
+  }
+}
+
+class AppStateStorage {
+  static const MethodChannel _channel = MethodChannel('bigheads/storage');
+
+  static Future<File?> _stateFile() async {
+    try {
+      final basePath = await _channel.invokeMethod<String>('getAppDataPath');
+      if (basePath == null || basePath.isEmpty) {
+        return null;
+      }
+      final dir = Directory(basePath);
+      if (!dir.existsSync()) {
+        dir.createSync(recursive: true);
+      }
+      return File('${dir.path}/bigheads_state.json');
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static Future<Map<String, dynamic>?> load() async {
+    final file = await _stateFile();
+    if (file == null || !file.existsSync()) {
+      return null;
+    }
+    try {
+      final raw = await file.readAsString();
+      final decoded = jsonDecode(raw);
+      if (decoded is Map<String, dynamic>) {
+        return decoded;
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static Future<void> save(Map<String, dynamic> data) async {
+    final file = await _stateFile();
+    if (file == null) {
+      return;
+    }
+    try {
+      await file.writeAsString(jsonEncode(data), flush: true);
+    } catch (_) {
+      // best-effort persistence
+    }
+  }
 }
 
 class AppDatabase {
@@ -881,7 +1361,13 @@ class AppDatabase {
   final ValueNotifier<List<CallItem>> callsNotifier = ValueNotifier<List<CallItem>>([]);
   final ValueNotifier<List<Group>> groupsNotifier = ValueNotifier<List<Group>>([]);
   final ValueNotifier<List<String>> invitesNotifier = ValueNotifier<List<String>>([]);
+  final ValueNotifier<List<AccountProfile>> accountsNotifier =
+      ValueNotifier<List<AccountProfile>>([]);
+  final ValueNotifier<AccountProfile?> currentUserNotifier =
+      ValueNotifier<AccountProfile?>(null);
   final Map<String, List<Message>> _messagesByChatId = <String, List<Message>>{};
+  final Map<String, String> _emailPasswordByEmail = <String, String>{};
+  final Map<String, String> _remoteContactNamesById = <String, String>{};
 
   final ValueNotifier<Map<String, Object>> settingsTable =
       ValueNotifier<Map<String, Object>>({
@@ -890,11 +1376,563 @@ class AppDatabase {
     'messagePreview': true,
     'sound': true,
     'vibration': true,
+    'serverBaseUrl': '',
   });
+
+  bool _hydrated = false;
+  String? _lastAuthError;
+  String _remoteToken = '';
+  String _remoteUserId = '';
+  StreamSubscription<RemoteIncomingMessage>? _remoteSub;
+
+  String? consumeLastAuthError() {
+    final value = _lastAuthError;
+    _lastAuthError = null;
+    return value;
+  }
+
+  String get serverBaseUrl {
+    return (settingsTable.value['serverBaseUrl'] as String? ?? '').trim();
+  }
+
+  void setServerBaseUrl(String value) {
+    final normalized = value.trim().replaceAll(RegExp(r'/+$'), '');
+    settingsTable.value = {
+      ...settingsTable.value,
+      'serverBaseUrl': normalized,
+    };
+    RemoteApiClient.instance.configureBaseUrl(normalized);
+    unawaited(_persist());
+  }
+
+  bool get _remoteEnabled => serverBaseUrl.isNotEmpty;
+
+  Future<void> _initRemoteFromStoredConfig() async {
+    if (!_remoteEnabled) {
+      return;
+    }
+    RemoteApiClient.instance.configureBaseUrl(serverBaseUrl);
+    if (_remoteToken.isEmpty || _remoteUserId.isEmpty) {
+      return;
+    }
+    RemoteApiClient.instance.restoreSession(
+      baseUrl: serverBaseUrl,
+      token: _remoteToken,
+      userId: _remoteUserId,
+    );
+    await RemoteApiClient.instance.startSession(
+      token: _remoteToken,
+      userId: _remoteUserId,
+    );
+    _bindRemoteMessages();
+    await _syncRemoteContacts();
+  }
+
+  void _bindRemoteMessages() {
+    _remoteSub?.cancel();
+    _remoteSub = RemoteApiClient.instance.messages.listen((event) {
+      final chatId = event.fromUserId == _remoteUserId ? '' : event.fromUserId;
+      if (chatId.isEmpty) {
+        return;
+      }
+      final chats = List<ChatItem>.from(chatsNotifier.value);
+      final existingIndex = chats.indexWhere((c) => c.id == chatId);
+      final displayName = _remoteContactNamesById[chatId] ?? event.fromName;
+      if (existingIndex < 0) {
+        chats.insert(
+          0,
+          ChatItem(
+            id: chatId,
+            name: displayName.isEmpty ? chatId : displayName,
+            message: event.text,
+            time: _nowLabel(),
+            unread: 1,
+            mood: ChatMood.primary,
+          ),
+        );
+      } else {
+        final old = chats.removeAt(existingIndex);
+        chats.insert(
+          0,
+          ChatItem(
+            id: old.id,
+            name: old.name,
+            message: event.text,
+            time: _nowLabel(),
+            unread: old.unread + 1,
+            mood: old.mood,
+          ),
+        );
+      }
+      chatsNotifier.value = chats;
+      final existing = List<Message>.from(_messagesByChatId[chatId] ?? <Message>[]);
+      existing.add(Message(fromMe: false, text: event.text, time: _nowLabel()));
+      _messagesByChatId[chatId] = existing;
+      unawaited(_persist());
+    });
+  }
+
+  Future<void> _syncRemoteContacts() async {
+    if (!_remoteEnabled || _remoteToken.isEmpty || _remoteUserId.isEmpty) {
+      return;
+    }
+    final remoteContacts = await RemoteApiClient.instance.listContacts();
+    if (remoteContacts.isEmpty) {
+      return;
+    }
+    final updated = List<Contact>.from(contactsNotifier.value);
+    var changed = false;
+    for (final rc in remoteContacts) {
+      _remoteContactNamesById[rc.userId] = rc.name;
+      final existing = updated.indexWhere((c) => c.remoteUserId == rc.userId);
+      if (existing >= 0) {
+        continue;
+      }
+      final byEmail = updated.indexWhere(
+        (c) => c.email.trim().toLowerCase() == rc.email.toLowerCase() && c.remoteUserId.isEmpty,
+      );
+      if (byEmail >= 0) {
+        final old = updated[byEmail];
+        updated[byEmail] = Contact(
+          name: old.name,
+          role: old.role,
+          company: old.company,
+          status: old.status,
+          phone: old.phone,
+          email: old.email,
+          location: old.location,
+          lastSeen: old.lastSeen,
+          tags: old.tags,
+          notes: old.notes,
+          favorite: old.favorite,
+          remoteUserId: rc.userId,
+        );
+        changed = true;
+      } else {
+        updated.insert(
+          0,
+          Contact(
+            name: rc.name,
+            role: '',
+            company: '',
+            status: 'Online',
+            phone: '',
+            email: rc.email,
+            location: '',
+            lastSeen: '',
+            tags: const <String>[],
+            notes: '',
+            remoteUserId: rc.userId,
+          ),
+        );
+        changed = true;
+      }
+    }
+    if (changed) {
+      contactsNotifier.value = updated;
+      await _persist();
+    }
+  }
+
+  Future<void> hydrate() async {
+    if (_hydrated) {
+      return;
+    }
+    final state = await AppStateStorage.load();
+    if (state == null) {
+      _hydrated = true;
+      return;
+    }
+
+    final contactsRaw = state['contacts'];
+    if (contactsRaw is List) {
+      contactsNotifier.value = contactsRaw
+          .whereType<Map>()
+          .map((item) => _contactFromMap(Map<String, dynamic>.from(item)))
+          .toList();
+    }
+
+    final chatsRaw = state['chats'];
+    if (chatsRaw is List) {
+      chatsNotifier.value = chatsRaw
+          .whereType<Map>()
+          .map((item) => _chatFromMap(Map<String, dynamic>.from(item)))
+          .toList();
+    }
+
+    final callsRaw = state['calls'];
+    if (callsRaw is List) {
+      callsNotifier.value = callsRaw
+          .whereType<Map>()
+          .map((item) => _callFromMap(Map<String, dynamic>.from(item)))
+          .toList();
+    }
+
+    final groupsRaw = state['groups'];
+    if (groupsRaw is List) {
+      groupsNotifier.value = groupsRaw
+          .whereType<Map>()
+          .map((item) => _groupFromMap(Map<String, dynamic>.from(item)))
+          .toList();
+    }
+
+    final invitesRaw = state['invites'];
+    if (invitesRaw is List) {
+      invitesNotifier.value = invitesRaw.map((e) => '$e').toList();
+    }
+
+    final settingsRaw = state['settings'];
+    if (settingsRaw is Map) {
+      settingsTable.value = {
+        ...settingsTable.value,
+        ...Map<String, Object>.from(settingsRaw),
+      };
+    }
+
+    final messagesRaw = state['messages'];
+    if (messagesRaw is Map) {
+      _messagesByChatId.clear();
+      messagesRaw.forEach((key, value) {
+        if (value is List) {
+          _messagesByChatId['$key'] = value
+              .whereType<Map>()
+              .map((m) => _messageFromMap(Map<String, dynamic>.from(m)))
+              .toList();
+        }
+      });
+    }
+
+    final accountsRaw = state['accounts'];
+    if (accountsRaw is List) {
+      accountsNotifier.value = accountsRaw
+          .whereType<Map>()
+          .map((m) => _accountFromMap(Map<String, dynamic>.from(m)))
+          .toList();
+    }
+
+    final authPasswordsRaw = state['authPasswords'];
+    if (authPasswordsRaw is Map) {
+      _emailPasswordByEmail
+        ..clear()
+        ..addAll(authPasswordsRaw.map((k, v) => MapEntry('$k', '$v')));
+    }
+
+    final remoteTokenRaw = state['remoteToken'];
+    if (remoteTokenRaw is String) {
+      _remoteToken = remoteTokenRaw;
+    }
+    final remoteUserIdRaw = state['remoteUserId'];
+    if (remoteUserIdRaw is String) {
+      _remoteUserId = remoteUserIdRaw;
+    }
+    final remoteNamesRaw = state['remoteContactNames'];
+    if (remoteNamesRaw is Map) {
+      _remoteContactNamesById
+        ..clear()
+        ..addAll(remoteNamesRaw.map((k, v) => MapEntry('$k', '$v')));
+    }
+
+    final currentEmail = state['currentUserEmail'];
+    if (currentEmail is String && currentEmail.isNotEmpty) {
+      currentUserNotifier.value = accountsNotifier.value
+          .where((a) => a.email.toLowerCase() == currentEmail.toLowerCase())
+          .cast<AccountProfile?>()
+          .firstWhere((a) => a != null, orElse: () => null);
+    }
+
+    _hydrated = true;
+    unawaited(_initRemoteFromStoredConfig());
+  }
 
   void addContact(Contact contact) {
     final updated = List<Contact>.from(contactsNotifier.value)..insert(0, contact);
     contactsNotifier.value = updated;
+    unawaited(_persist());
+    if (_remoteEnabled && _remoteToken.isNotEmpty && contact.email.trim().isNotEmpty) {
+      unawaited(_linkContactToRemote(contact));
+    }
+  }
+
+  Future<void> _linkContactToRemote(Contact contact) async {
+    final email = contact.email.trim().toLowerCase();
+    if (email.isEmpty) {
+      return;
+    }
+    final remote = await RemoteApiClient.instance.findUserByEmail(email);
+    if (remote == null || remote.userId == _remoteUserId) {
+      return;
+    }
+    final added = await RemoteApiClient.instance.addContact(remote.userId);
+    if (!added) {
+      return;
+    }
+    _remoteContactNamesById[remote.userId] = remote.name;
+    final contacts = List<Contact>.from(contactsNotifier.value);
+    final idx = contacts.indexWhere((c) => c.phone == contact.phone && c.email == contact.email);
+    if (idx < 0) {
+      return;
+    }
+    final old = contacts[idx];
+    contacts[idx] = Contact(
+      name: old.name,
+      role: old.role,
+      company: old.company,
+      status: old.status,
+      phone: old.phone,
+      email: old.email,
+      location: old.location,
+      lastSeen: old.lastSeen,
+      tags: old.tags,
+      notes: old.notes,
+      favorite: old.favorite,
+      remoteUserId: remote.userId,
+    );
+    contactsNotifier.value = contacts;
+    await _persist();
+  }
+
+  Future<bool> signInWithGoogle() async {
+    try {
+      _lastAuthError = null;
+      final user = await AppPlatformService.signInWithGoogle();
+      if (user == null) {
+        _lastAuthError = 'UNKNOWN';
+        return false;
+      }
+      final platformError = (user['error'] ?? '').trim();
+      if (platformError.isNotEmpty) {
+        _lastAuthError = platformError;
+        return false;
+      }
+      final email = (user['email'] ?? '').trim().toLowerCase();
+      if (email.isEmpty) {
+        _lastAuthError = 'NO_EMAIL';
+        return false;
+      }
+      final displayName = (user['name'] ?? '').trim();
+      final existing = accountsNotifier.value
+          .where((a) => a.email.toLowerCase() == email)
+          .toList();
+      AccountProfile account;
+      if (existing.isNotEmpty) {
+        final old = existing.first;
+        account = AccountProfile(
+          email: old.email,
+          name: old.name.isEmpty ? displayName : old.name,
+          phone: old.phone,
+          bio: old.bio,
+          qrCode: old.qrCode,
+          avatarBase64: old.avatarBase64,
+        );
+      } else {
+        account = AccountProfile(
+          email: email,
+          name: displayName,
+          phone: '',
+          bio: '',
+          qrCode: _generateQrCode(email),
+        );
+      }
+      final accounts = List<AccountProfile>.from(accountsNotifier.value);
+      final idx = accounts.indexWhere((a) => a.email == account.email);
+      if (idx >= 0) {
+        accounts[idx] = account;
+      } else {
+        accounts.add(account);
+      }
+      accountsNotifier.value = accounts;
+      currentUserNotifier.value = account;
+      await _persist();
+      return true;
+    } catch (_) {
+      _lastAuthError = 'EXCEPTION';
+      return false;
+    }
+  }
+
+  Future<bool> registerWithEmail({
+    required String email,
+    required String password,
+    required String name,
+  }) async {
+    _lastAuthError = null;
+    final normalizedEmail = email.trim().toLowerCase();
+    if (normalizedEmail.isEmpty || !normalizedEmail.contains('@')) {
+      _lastAuthError = 'INVALID_EMAIL';
+      return false;
+    }
+    if (password.trim().length < 6) {
+      _lastAuthError = 'WEAK_PASSWORD';
+      return false;
+    }
+    if (_remoteEnabled) {
+      RemoteApiClient.instance.configureBaseUrl(serverBaseUrl);
+      final remoteResult = await RemoteApiClient.instance.register(
+        email: normalizedEmail,
+        password: password,
+        name: name.trim(),
+      );
+      if (!remoteResult.ok) {
+        _lastAuthError = remoteResult.error;
+        return false;
+      }
+      _remoteToken = remoteResult.token;
+      _remoteUserId = remoteResult.userId;
+      await RemoteApiClient.instance.startSession(
+        token: _remoteToken,
+        userId: _remoteUserId,
+      );
+      _bindRemoteMessages();
+    } else {
+      if (_emailPasswordByEmail.containsKey(normalizedEmail)) {
+        _lastAuthError = 'EMAIL_EXISTS';
+        return false;
+      }
+      _emailPasswordByEmail[normalizedEmail] = password;
+    }
+
+    final account = AccountProfile(
+      email: normalizedEmail,
+      name: name.trim().isEmpty ? normalizedEmail.split('@').first : name.trim(),
+      phone: '',
+      bio: '',
+      qrCode: _generateQrCode(normalizedEmail),
+    );
+    final accounts = List<AccountProfile>.from(accountsNotifier.value)..add(account);
+    accountsNotifier.value = accounts;
+    currentUserNotifier.value = account;
+    await _persist();
+    if (_remoteEnabled) {
+      await _syncRemoteContacts();
+    }
+    return true;
+  }
+
+  Future<bool> signInWithEmail({
+    required String email,
+    required String password,
+  }) async {
+    _lastAuthError = null;
+    final normalizedEmail = email.trim().toLowerCase();
+    if (normalizedEmail.isEmpty || !normalizedEmail.contains('@')) {
+      _lastAuthError = 'INVALID_EMAIL';
+      return false;
+    }
+    if (_remoteEnabled) {
+      RemoteApiClient.instance.configureBaseUrl(serverBaseUrl);
+      final remoteResult = await RemoteApiClient.instance.login(
+        email: normalizedEmail,
+        password: password,
+      );
+      if (!remoteResult.ok) {
+        _lastAuthError = remoteResult.error;
+        return false;
+      }
+      _remoteToken = remoteResult.token;
+      _remoteUserId = remoteResult.userId;
+      await RemoteApiClient.instance.startSession(
+        token: _remoteToken,
+        userId: _remoteUserId,
+      );
+      _bindRemoteMessages();
+    } else {
+      final savedPassword = _emailPasswordByEmail[normalizedEmail];
+      if (savedPassword == null) {
+        _lastAuthError = 'EMAIL_NOT_FOUND';
+        return false;
+      }
+      if (savedPassword != password) {
+        _lastAuthError = 'WRONG_PASSWORD';
+        return false;
+      }
+    }
+    final account = accountsNotifier.value
+        .where((a) => a.email.toLowerCase() == normalizedEmail)
+        .cast<AccountProfile?>()
+        .firstWhere((a) => a != null, orElse: () => null);
+    if (account == null) {
+      final newAccount = AccountProfile(
+        email: normalizedEmail,
+        name: normalizedEmail.split('@').first,
+        phone: '',
+        bio: '',
+        qrCode: _generateQrCode(normalizedEmail),
+      );
+      accountsNotifier.value = List<AccountProfile>.from(accountsNotifier.value)..add(newAccount);
+      currentUserNotifier.value = newAccount;
+      await _persist();
+      if (_remoteEnabled) {
+        await _syncRemoteContacts();
+      }
+      return true;
+    }
+    currentUserNotifier.value = account;
+    await _persist();
+    if (_remoteEnabled) {
+      await _syncRemoteContacts();
+    }
+    return true;
+  }
+
+  void logout() {
+    unawaited(AppPlatformService.signOutGoogle());
+    unawaited(RemoteApiClient.instance.clearSession());
+    _remoteToken = '';
+    _remoteUserId = '';
+    _remoteSub?.cancel();
+    _remoteSub = null;
+    currentUserNotifier.value = null;
+    contactsNotifier.value = <Contact>[];
+    chatsNotifier.value = <ChatItem>[];
+    callsNotifier.value = <CallItem>[];
+    groupsNotifier.value = <Group>[];
+    invitesNotifier.value = <String>[];
+    _messagesByChatId.clear();
+    unawaited(_persist());
+  }
+
+  void updateCurrentProfile({
+    required String email,
+    required String name,
+    required String phone,
+    required String bio,
+    String? avatarBase64,
+  }) {
+    final current = currentUserNotifier.value;
+    if (current == null) {
+      return;
+    }
+    final updated = AccountProfile(
+      email: email.trim().isEmpty ? current.email : email.trim().toLowerCase(),
+      name: name,
+      phone: phone,
+      bio: bio,
+      qrCode: current.qrCode,
+      avatarBase64: avatarBase64 ?? current.avatarBase64,
+    );
+    final accounts = List<AccountProfile>.from(accountsNotifier.value);
+    final idx = accounts.indexWhere((a) => a.email == current.email);
+    if (idx >= 0) {
+      accounts[idx] = updated;
+    } else {
+      accounts.add(updated);
+    }
+    accountsNotifier.value = accounts;
+    currentUserNotifier.value = updated;
+    unawaited(_persist());
+  }
+
+  AccountProfile? findAccountByQr(String code) {
+    final normalized = code.trim();
+    if (normalized.isEmpty) {
+      return null;
+    }
+    final matches =
+        accountsNotifier.value.where((a) => a.qrCode == normalized).toList();
+    if (matches.isEmpty) {
+      return null;
+    }
+    return matches.first;
   }
 
   bool contactExists(String phone, String email) {
@@ -921,7 +1959,29 @@ class AppDatabase {
     final updated = List<ChatItem>.from(chatsNotifier.value)..insert(0, chat);
     chatsNotifier.value = updated;
     _messagesByChatId.putIfAbsent(chatId, () => <Message>[]);
+    if (_remoteEnabled && contact.remoteUserId.isNotEmpty) {
+      unawaited(_pullRemoteHistory(contact.remoteUserId));
+    }
+    unawaited(_persist());
     return chat;
+  }
+
+  Future<void> _pullRemoteHistory(String peerUserId) async {
+    final rows = await RemoteApiClient.instance.history(peerUserId);
+    if (rows.isEmpty) {
+      return;
+    }
+    final mapped = rows
+        .map(
+          (m) => Message(
+            fromMe: m.fromUserId == _remoteUserId,
+            text: m.text,
+            time: _formatServerTime(m.timestamp),
+          ),
+        )
+        .toList();
+    _messagesByChatId[peerUserId] = mapped;
+    unawaited(_persist());
   }
 
   List<Message> messagesOf(String chatId) {
@@ -949,12 +2009,39 @@ class AppDatabase {
       chats.insert(0, updatedChat);
       chatsNotifier.value = chats;
     }
+    if (_remoteEnabled && fromMe && _remoteToken.isNotEmpty) {
+      unawaited(_sendRemoteForChat(chatId: chatId, text: text));
+    }
+    unawaited(_persist());
+  }
+
+  Future<void> _sendRemoteForChat({
+    required String chatId,
+    required String text,
+  }) async {
+    var peerUserId = chatId.trim();
+    if (peerUserId.isEmpty) {
+      return;
+    }
+    if (!peerUserId.startsWith('u_')) {
+      if (peerUserId.contains('@')) {
+        final remote = await RemoteApiClient.instance.findUserByEmail(peerUserId);
+        if (remote != null) {
+          peerUserId = remote.userId;
+        }
+      }
+    }
+    if (!peerUserId.startsWith('u_')) {
+      return;
+    }
+    await RemoteApiClient.instance.sendMessage(peerUserId: peerUserId, text: text);
   }
 
   CallItem logCall(Contact contact, {required bool incoming}) {
     final call = CallItem(name: contact.name, time: _nowLabel(), incoming: incoming);
     final updated = List<CallItem>.from(callsNotifier.value)..insert(0, call);
     callsNotifier.value = updated;
+    unawaited(_persist());
     return call;
   }
 
@@ -965,6 +2052,7 @@ class AppDatabase {
     }
     final updated = List<String>.from(invitesNotifier.value)..insert(0, sanitized);
     invitesNotifier.value = updated;
+    unawaited(_persist());
   }
 
   Group addGroup({
@@ -975,6 +2063,7 @@ class AppDatabase {
     final group = Group(name: name, members: members, description: description);
     final updated = List<Group>.from(groupsNotifier.value)..insert(0, group);
     groupsNotifier.value = updated;
+    unawaited(_persist());
     return group;
   }
 
@@ -993,6 +2082,7 @@ class AppDatabase {
     if (idx >= 0) {
       groups[idx] = updatedGroup;
       groupsNotifier.value = groups;
+      unawaited(_persist());
     }
     return updatedGroup;
   }
@@ -1003,10 +2093,38 @@ class AppDatabase {
     final chatId = _chatIdFromContact(contact);
     chatsNotifier.value = chatsNotifier.value.where((c) => c.id != chatId).toList();
     _messagesByChatId.remove(chatId);
+    unawaited(_persist());
+  }
+
+  T? getSetting<T>(String key, T fallback) {
+    final value = settingsTable.value[key];
+    if (value is T) {
+      return value;
+    }
+    return fallback;
+  }
+
+  void setSetting(String key, Object value) {
+    settingsTable.value = {
+      ...settingsTable.value,
+      key: value,
+    };
+    unawaited(_persist());
   }
 
   String _chatIdFromContact(Contact contact) {
-    return contact.phone.replaceAll(' ', '').replaceAll('+', '');
+    if (contact.remoteUserId.trim().isNotEmpty) {
+      return contact.remoteUserId.trim();
+    }
+    final normalizedEmail = contact.email.trim().toLowerCase();
+    if (normalizedEmail.isNotEmpty) {
+      return normalizedEmail;
+    }
+    final normalizedPhone = contact.phone.replaceAll(' ', '').replaceAll('+', '');
+    if (normalizedPhone.isNotEmpty) {
+      return normalizedPhone;
+    }
+    return '';
   }
 
   String _nowLabel() {
@@ -1014,6 +2132,150 @@ class AppDatabase {
     final hh = now.hour.toString().padLeft(2, '0');
     final mm = now.minute.toString().padLeft(2, '0');
     return '$hh:$mm';
+  }
+
+  String _formatServerTime(String iso) {
+    final parsed = DateTime.tryParse(iso)?.toLocal();
+    if (parsed == null) {
+      return _nowLabel();
+    }
+    final hh = parsed.hour.toString().padLeft(2, '0');
+    final mm = parsed.minute.toString().padLeft(2, '0');
+    return '$hh:$mm';
+  }
+
+  Future<void> _persist() async {
+    final payload = <String, dynamic>{
+      'contacts': contactsNotifier.value.map(_contactToMap).toList(),
+      'chats': chatsNotifier.value.map(_chatToMap).toList(),
+      'calls': callsNotifier.value.map(_callToMap).toList(),
+      'groups': groupsNotifier.value.map(_groupToMap).toList(),
+      'invites': invitesNotifier.value,
+      'settings': settingsTable.value,
+      'messages': _messagesByChatId.map(
+        (key, value) => MapEntry(key, value.map(_messageToMap).toList()),
+      ),
+      'accounts': accountsNotifier.value.map(_accountToMap).toList(),
+      'authPasswords': _emailPasswordByEmail,
+      'remoteToken': _remoteToken,
+      'remoteUserId': _remoteUserId,
+      'remoteContactNames': _remoteContactNamesById,
+      'currentUserEmail': currentUserNotifier.value?.email ?? '',
+    };
+    await AppStateStorage.save(payload);
+  }
+
+  Map<String, dynamic> _contactToMap(Contact c) => {
+        'name': c.name,
+        'role': c.role,
+        'company': c.company,
+        'status': c.status,
+        'phone': c.phone,
+        'email': c.email,
+        'location': c.location,
+        'lastSeen': c.lastSeen,
+        'tags': c.tags,
+        'notes': c.notes,
+        'favorite': c.favorite,
+        'remoteUserId': c.remoteUserId,
+      };
+
+  Contact _contactFromMap(Map<String, dynamic> m) => Contact(
+        name: '${m['name'] ?? ''}',
+        role: '${m['role'] ?? ''}',
+        company: '${m['company'] ?? ''}',
+        status: '${m['status'] ?? ''}',
+        phone: '${m['phone'] ?? ''}',
+        email: '${m['email'] ?? ''}',
+        location: '${m['location'] ?? ''}',
+        lastSeen: '${m['lastSeen'] ?? ''}',
+        tags: (m['tags'] is List)
+            ? List<String>.from(m['tags'] as List<dynamic>)
+            : <String>[],
+        notes: '${m['notes'] ?? ''}',
+        favorite: m['favorite'] == true,
+        remoteUserId: '${m['remoteUserId'] ?? ''}',
+      );
+
+  Map<String, dynamic> _chatToMap(ChatItem c) => {
+        'id': c.id,
+        'name': c.name,
+        'message': c.message,
+        'time': c.time,
+        'unread': c.unread,
+      };
+
+  ChatItem _chatFromMap(Map<String, dynamic> m) => ChatItem(
+        id: '${m['id'] ?? ''}',
+        name: '${m['name'] ?? ''}',
+        message: '${m['message'] ?? ''}',
+        time: '${m['time'] ?? ''}',
+        unread: int.tryParse('${m['unread'] ?? 0}') ?? 0,
+        mood: ChatMood.primary,
+      );
+
+  Map<String, dynamic> _callToMap(CallItem c) => {
+        'name': c.name,
+        'time': c.time,
+        'incoming': c.incoming,
+      };
+
+  CallItem _callFromMap(Map<String, dynamic> m) => CallItem(
+        name: '${m['name'] ?? ''}',
+        time: '${m['time'] ?? ''}',
+        incoming: m['incoming'] == true,
+      );
+
+  Map<String, dynamic> _groupToMap(Group g) => {
+        'name': g.name,
+        'description': g.description,
+        'members': g.members,
+      };
+
+  Group _groupFromMap(Map<String, dynamic> m) => Group(
+        name: '${m['name'] ?? ''}',
+        description: '${m['description'] ?? ''}',
+        members: (m['members'] is List)
+            ? List<String>.from(m['members'] as List<dynamic>)
+            : <String>[],
+      );
+
+  Map<String, dynamic> _messageToMap(Message m) => {
+        'fromMe': m.fromMe,
+        'text': m.text,
+        'time': m.time,
+      };
+
+  Message _messageFromMap(Map<String, dynamic> m) => Message(
+        fromMe: m['fromMe'] == true,
+        text: '${m['text'] ?? ''}',
+        time: '${m['time'] ?? ''}',
+      );
+
+  Map<String, dynamic> _accountToMap(AccountProfile a) => {
+        'email': a.email,
+        'name': a.name,
+        'phone': a.phone,
+        'bio': a.bio,
+        'qrCode': a.qrCode,
+        'avatarBase64': a.avatarBase64 ?? '',
+      };
+
+  AccountProfile _accountFromMap(Map<String, dynamic> m) => AccountProfile(
+        email: '${m['email'] ?? ''}',
+        name: '${m['name'] ?? ''}',
+        phone: '${m['phone'] ?? ''}',
+        bio: '${m['bio'] ?? ''}',
+        qrCode: '${m['qrCode'] ?? ''}',
+        avatarBase64: ('${m['avatarBase64'] ?? ''}').isEmpty
+            ? null
+            : '${m['avatarBase64']}',
+      );
+
+  String _generateQrCode(String email) {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final hash = email.hashCode.abs().toRadixString(16).toUpperCase();
+    return 'BH-$hash-${now.toRadixString(16).toUpperCase()}';
   }
 }
 
@@ -1735,6 +2997,18 @@ class _NotificationsSettingsScreenState
   TimeOfDay quietEnd = const TimeOfDay(hour: 7, minute: 0);
 
   @override
+  void initState() {
+    super.initState();
+    final db = AppDatabase.instance;
+    messagePreview = db.getSetting<bool>('messagePreview', true) ?? true;
+    sound = db.getSetting<bool>('sound', true) ?? true;
+    vibration = db.getSetting<bool>('vibration', true) ?? true;
+    callAlerts = db.getSetting<bool>('callAlerts', true) ?? true;
+    mentionAlerts = db.getSetting<bool>('mentionAlerts', true) ?? true;
+    quietHours = db.getSetting<bool>('quietHours', false) ?? false;
+  }
+
+  @override
   Widget build(BuildContext context) {
     final palette = widget.palette;
     final strings = widget.strings;
@@ -1753,28 +3027,40 @@ class _NotificationsSettingsScreenState
                 ? 'نمایش متن پیام روی اعلان'
                 : 'Show message content on alerts',
             value: messagePreview,
-            onChanged: (value) => setState(() => messagePreview = value),
+            onChanged: (value) {
+              setState(() => messagePreview = value);
+              AppDatabase.instance.setSetting('messagePreview', value);
+            },
           ),
           SettingsSwitchRow(
             palette: palette,
             title: strings.sound,
             subtitle: strings.isFa ? 'پخش صدای اعلان' : 'Play notification sounds',
             value: sound,
-            onChanged: (value) => setState(() => sound = value),
+            onChanged: (value) {
+              setState(() => sound = value);
+              AppDatabase.instance.setSetting('sound', value);
+            },
           ),
           SettingsSwitchRow(
             palette: palette,
             title: strings.vibration,
             subtitle: strings.isFa ? 'ویبره برای اعلان‌ها' : 'Vibrate on alerts',
             value: vibration,
-            onChanged: (value) => setState(() => vibration = value),
+            onChanged: (value) {
+              setState(() => vibration = value);
+              AppDatabase.instance.setSetting('vibration', value);
+            },
           ),
           SettingsSwitchRow(
             palette: palette,
             title: strings.callAlerts,
             subtitle: strings.isFa ? 'هشدار برای تماس‌ها' : 'Alerts for calls',
             value: callAlerts,
-            onChanged: (value) => setState(() => callAlerts = value),
+            onChanged: (value) {
+              setState(() => callAlerts = value);
+              AppDatabase.instance.setSetting('callAlerts', value);
+            },
           ),
           SettingsSwitchRow(
             palette: palette,
@@ -1783,7 +3069,10 @@ class _NotificationsSettingsScreenState
                 ? 'فقط زمانی که منشن شوید'
                 : 'Only when you are mentioned',
             value: mentionAlerts,
-            onChanged: (value) => setState(() => mentionAlerts = value),
+            onChanged: (value) {
+              setState(() => mentionAlerts = value);
+              AppDatabase.instance.setSetting('mentionAlerts', value);
+            },
           ),
           const SizedBox(height: 12),
           SettingsSection(title: strings.quietHours),
@@ -1794,7 +3083,10 @@ class _NotificationsSettingsScreenState
                 ? 'بی‌صدا کردن اعلان‌ها'
                 : 'Silence all alerts during hours',
             value: quietHours,
-            onChanged: (value) => setState(() => quietHours = value),
+            onChanged: (value) {
+              setState(() => quietHours = value);
+              AppDatabase.instance.setSetting('quietHours', value);
+            },
           ),
           const SizedBox(height: 8),
           SettingsInlineRow(
@@ -1809,6 +3101,10 @@ class _NotificationsSettingsScreenState
               );
               if (picked != null) {
                 setState(() => quietStart = picked);
+                AppDatabase.instance.setSetting(
+                  'quietStart',
+                  '${picked.hour.toString().padLeft(2, '0')}:${picked.minute.toString().padLeft(2, '0')}',
+                );
               }
             },
           ),
@@ -1825,6 +3121,10 @@ class _NotificationsSettingsScreenState
               );
               if (picked != null) {
                 setState(() => quietEnd = picked);
+                AppDatabase.instance.setSetting(
+                  'quietEnd',
+                  '${picked.hour.toString().padLeft(2, '0')}:${picked.minute.toString().padLeft(2, '0')}',
+                );
               }
             },
           ),
@@ -1860,6 +3160,17 @@ class _PrivacySettingsScreenState extends State<PrivacySettingsScreen> {
   bool readReceipts = true;
 
   @override
+  void initState() {
+    super.initState();
+    final db = AppDatabase.instance;
+    passcode = db.getSetting<bool>('passcode', true) ?? true;
+    twoFactor = db.getSetting<bool>('twoFactor', true) ?? true;
+    lastSeen = db.getSetting<bool>('lastSeen', true) ?? true;
+    profilePhoto = db.getSetting<bool>('profilePhoto', true) ?? true;
+    readReceipts = db.getSetting<bool>('readReceipts', true) ?? true;
+  }
+
+  @override
   Widget build(BuildContext context) {
     final palette = widget.palette;
     final strings = widget.strings;
@@ -1884,7 +3195,10 @@ class _PrivacySettingsScreenState extends State<PrivacySettingsScreen> {
                 ? 'قفل با رمز یا بیومتریک'
                 : 'Lock with passcode or biometrics',
             value: passcode,
-            onChanged: (value) => setState(() => passcode = value),
+            onChanged: (value) {
+              setState(() => passcode = value);
+              AppDatabase.instance.setSetting('passcode', value);
+            },
           ),
           SettingsSwitchRow(
             palette: palette,
@@ -1893,7 +3207,10 @@ class _PrivacySettingsScreenState extends State<PrivacySettingsScreen> {
                 ? 'افزایش امنیت ورود'
                 : 'Extra login security',
             value: twoFactor,
-            onChanged: (value) => setState(() => twoFactor = value),
+            onChanged: (value) {
+              setState(() => twoFactor = value);
+              AppDatabase.instance.setSetting('twoFactor', value);
+            },
           ),
           SettingsSwitchRow(
             palette: palette,
@@ -1902,7 +3219,10 @@ class _PrivacySettingsScreenState extends State<PrivacySettingsScreen> {
                 ? 'نمایش آخرین بازدید'
                 : 'Show last seen time',
             value: lastSeen,
-            onChanged: (value) => setState(() => lastSeen = value),
+            onChanged: (value) {
+              setState(() => lastSeen = value);
+              AppDatabase.instance.setSetting('lastSeen', value);
+            },
           ),
           SettingsSwitchRow(
             palette: palette,
@@ -1911,7 +3231,10 @@ class _PrivacySettingsScreenState extends State<PrivacySettingsScreen> {
                 ? 'نمایش عکس پروفایل'
                 : 'Allow profile photo visibility',
             value: profilePhoto,
-            onChanged: (value) => setState(() => profilePhoto = value),
+            onChanged: (value) {
+              setState(() => profilePhoto = value);
+              AppDatabase.instance.setSetting('profilePhoto', value);
+            },
           ),
           SettingsSwitchRow(
             palette: palette,
@@ -1920,7 +3243,10 @@ class _PrivacySettingsScreenState extends State<PrivacySettingsScreen> {
                 ? 'نمایش خوانده‌شدن پیام'
                 : 'Show read receipts',
             value: readReceipts,
-            onChanged: (value) => setState(() => readReceipts = value),
+            onChanged: (value) {
+              setState(() => readReceipts = value);
+              AppDatabase.instance.setSetting('readReceipts', value);
+            },
           ),
           const SizedBox(height: 16),
           SettingsSection(title: strings.blockedUsers),
@@ -1980,6 +3306,18 @@ class _AppearanceSettingsScreenState extends State<AppearanceSettingsScreen> {
   bool compactMode = false;
 
   @override
+  void initState() {
+    super.initState();
+    final db = AppDatabase.instance;
+    theme = db.getSetting<String>('appearanceTheme', 'system') ?? 'system';
+    fontSize = (db.getSetting<num>('fontSize', 1.0) ?? 1.0).toDouble();
+    bubble = db.getSetting<String>('bubble', 'rounded') ?? 'rounded';
+    wallpaper = db.getSetting<String>('wallpaper', 'linen') ?? 'linen';
+    appIcon = db.getSetting<String>('appIcon', 'classic') ?? 'classic';
+    compactMode = db.getSetting<bool>('compactMode', false) ?? false;
+  }
+
+  @override
   Widget build(BuildContext context) {
     final palette = widget.palette;
     final strings = widget.strings;
@@ -1995,19 +3333,28 @@ class _AppearanceSettingsScreenState extends State<AppearanceSettingsScreen> {
             palette: palette,
             label: strings.themeSystem,
             selected: theme == 'system',
-            onTap: () => setState(() => theme = 'system'),
+            onTap: () {
+              setState(() => theme = 'system');
+              AppDatabase.instance.setSetting('appearanceTheme', 'system');
+            },
           ),
           SettingsOptionRow(
             palette: palette,
             label: strings.themeLight,
             selected: theme == 'light',
-            onTap: () => setState(() => theme = 'light'),
+            onTap: () {
+              setState(() => theme = 'light');
+              AppDatabase.instance.setSetting('appearanceTheme', 'light');
+            },
           ),
           SettingsOptionRow(
             palette: palette,
             label: strings.themeDark,
             selected: theme == 'dark',
-            onTap: () => setState(() => theme = 'dark'),
+            onTap: () {
+              setState(() => theme = 'dark');
+              AppDatabase.instance.setSetting('appearanceTheme', 'dark');
+            },
           ),
           const SizedBox(height: 16),
           SettingsSection(title: strings.fontSize),
@@ -2016,7 +3363,10 @@ class _AppearanceSettingsScreenState extends State<AppearanceSettingsScreen> {
             value: fontSize,
             min: 0.85,
             max: 1.15,
-            onChanged: (value) => setState(() => fontSize = value),
+            onChanged: (value) {
+              setState(() => fontSize = value);
+              AppDatabase.instance.setSetting('fontSize', value);
+            },
             label: strings.isFa ? 'متن' : 'Text',
           ),
           const SizedBox(height: 16),
@@ -2025,13 +3375,19 @@ class _AppearanceSettingsScreenState extends State<AppearanceSettingsScreen> {
             palette: palette,
             label: strings.bubbleRounded,
             selected: bubble == 'rounded',
-            onTap: () => setState(() => bubble = 'rounded'),
+            onTap: () {
+              setState(() => bubble = 'rounded');
+              AppDatabase.instance.setSetting('bubble', 'rounded');
+            },
           ),
           SettingsOptionRow(
             palette: palette,
             label: strings.bubbleSquare,
             selected: bubble == 'square',
-            onTap: () => setState(() => bubble = 'square'),
+            onTap: () {
+              setState(() => bubble = 'square');
+              AppDatabase.instance.setSetting('bubble', 'square');
+            },
           ),
           const SizedBox(height: 16),
           SettingsSection(title: strings.wallpaper),
@@ -2039,19 +3395,28 @@ class _AppearanceSettingsScreenState extends State<AppearanceSettingsScreen> {
             palette: palette,
             label: strings.isFa ? 'کتان روشن' : 'Light linen',
             selected: wallpaper == 'linen',
-            onTap: () => setState(() => wallpaper = 'linen'),
+            onTap: () {
+              setState(() => wallpaper = 'linen');
+              AppDatabase.instance.setSetting('wallpaper', 'linen');
+            },
           ),
           SettingsOptionRow(
             palette: palette,
             label: strings.isFa ? 'آبی اداری' : 'Office blue',
             selected: wallpaper == 'office',
-            onTap: () => setState(() => wallpaper = 'office'),
+            onTap: () {
+              setState(() => wallpaper = 'office');
+              AppDatabase.instance.setSetting('wallpaper', 'office');
+            },
           ),
           SettingsOptionRow(
             palette: palette,
             label: strings.isFa ? 'دودی تیره' : 'Slate dark',
             selected: wallpaper == 'slate',
-            onTap: () => setState(() => wallpaper = 'slate'),
+            onTap: () {
+              setState(() => wallpaper = 'slate');
+              AppDatabase.instance.setSetting('wallpaper', 'slate');
+            },
           ),
           const SizedBox(height: 16),
           SettingsSection(title: strings.appIcon),
@@ -2059,13 +3424,19 @@ class _AppearanceSettingsScreenState extends State<AppearanceSettingsScreen> {
             palette: palette,
             label: strings.isFa ? 'کلاسیک' : 'Classic',
             selected: appIcon == 'classic',
-            onTap: () => setState(() => appIcon = 'classic'),
+            onTap: () {
+              setState(() => appIcon = 'classic');
+              AppDatabase.instance.setSetting('appIcon', 'classic');
+            },
           ),
           SettingsOptionRow(
             palette: palette,
             label: strings.isFa ? 'مینیمال' : 'Minimal',
             selected: appIcon == 'minimal',
-            onTap: () => setState(() => appIcon = 'minimal'),
+            onTap: () {
+              setState(() => appIcon = 'minimal');
+              AppDatabase.instance.setSetting('appIcon', 'minimal');
+            },
           ),
           const SizedBox(height: 16),
           SettingsSwitchRow(
@@ -2075,7 +3446,10 @@ class _AppearanceSettingsScreenState extends State<AppearanceSettingsScreen> {
                 ? 'فاصله‌های کمتر در لیست‌ها'
                 : 'Tighter spacing in lists',
             value: compactMode,
-            onChanged: (value) => setState(() => compactMode = value),
+            onChanged: (value) {
+              setState(() => compactMode = value);
+              AppDatabase.instance.setSetting('compactMode', value);
+            },
           ),
         ],
       ),
@@ -2396,6 +3770,26 @@ class ProfileScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final account = AppDatabase.instance.currentUserNotifier.value;
+    if (account == null) {
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 120),
+        child: Center(
+          child: Text(
+            strings.isFa ? 'حسابی فعال نیست.' : 'No active account.',
+            style: Theme.of(context)
+                .textTheme
+                .bodyMedium
+                ?.copyWith(color: palette.muted),
+          ),
+        ),
+      );
+    }
+    final displayName = account.name.isEmpty
+        ? account.email.split('@').first
+        : account.name;
+    final sub = account.phone.isEmpty ? account.email : account.phone;
+
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 120),
       child: Column(
@@ -2418,21 +3812,26 @@ class ProfileScreen extends StatelessWidget {
             ),
             child: Row(
               children: [
-                InitialAvatar(name: 'Matin R.', palette: palette, size: 56),
+                AccountAvatar(
+                  account: account,
+                  palette: palette,
+                  fallbackName: displayName,
+                  size: 56,
+                ),
                 const SizedBox(width: 14),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        'Matin R.',
+                        displayName,
                         style: Theme.of(context)
                             .textTheme
                             .titleLarge
                             ?.copyWith(color: palette.ink),
                       ),
                       Text(
-                        '@bighead',
+                        sub,
                         style: Theme.of(context)
                             .textTheme
                             .bodyMedium
@@ -2448,6 +3847,7 @@ class ProfileScreen extends StatelessWidget {
                         builder: (_) => ProfileEditScreen(
                           palette: palette,
                           strings: strings,
+                          account: account,
                         ),
                       ),
                     );
@@ -2459,6 +3859,34 @@ class ProfileScreen extends StatelessWidget {
           ),
           const SizedBox(height: 12),
           _ProfileStatRow(palette: palette, strings: strings),
+          const SizedBox(height: 12),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: palette.card,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: palette.border),
+            ),
+            child: Text(
+              account.bio.isEmpty
+                  ? (strings.isFa ? 'بدون بیوگرافی' : 'No bio yet.')
+                  : account.bio,
+              style: Theme.of(context)
+                  .textTheme
+                  .bodyMedium
+                  ?.copyWith(color: palette.muted),
+            ),
+          ),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: () => AppDatabase.instance.logout(),
+              icon: const Icon(Icons.logout),
+              label: Text(strings.isFa ? 'خروج از حساب' : 'Logout'),
+            ),
+          ),
         ],
       ),
     );
@@ -2473,10 +3901,11 @@ class _ProfileStatRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final db = AppDatabase.instance;
     final items = [
-      _ProfileStat(label: strings.inbox, value: '128'),
-      _ProfileStat(label: strings.contacts, value: '74'),
-      _ProfileStat(label: strings.calls, value: '31'),
+      _ProfileStat(label: strings.inbox, value: '${db.chatsNotifier.value.length}'),
+      _ProfileStat(label: strings.contacts, value: '${db.contactsNotifier.value.length}'),
+      _ProfileStat(label: strings.calls, value: '${db.callsNotifier.value.length}'),
     ];
 
     return Row(
@@ -2817,6 +4246,43 @@ class InitialAvatar extends StatelessWidget {
   }
 }
 
+class AccountAvatar extends StatelessWidget {
+  const AccountAvatar({
+    super.key,
+    required this.account,
+    required this.palette,
+    required this.fallbackName,
+    this.size = 56,
+  });
+
+  final AccountProfile account;
+  final BigHeadPalette palette;
+  final String fallbackName;
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    if (account.avatarBase64 != null && account.avatarBase64!.isNotEmpty) {
+      try {
+        final bytes = base64Decode(account.avatarBase64!);
+        return Container(
+          width: size,
+          height: size,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: palette.border),
+            image: DecorationImage(
+              image: MemoryImage(Uint8List.fromList(bytes)),
+              fit: BoxFit.cover,
+            ),
+          ),
+        );
+      } catch (_) {}
+    }
+    return InitialAvatar(name: fallbackName, palette: palette, size: size);
+  }
+}
+
 class ChatScreen extends StatefulWidget {
   const ChatScreen({
     super.key,
@@ -2835,9 +4301,24 @@ class ChatScreen extends StatefulWidget {
 
 class _ChatScreenState extends State<ChatScreen> {
   final messageController = TextEditingController();
+  StreamSubscription<RemoteIncomingMessage>? _remoteMessageSub;
+
+  @override
+  void initState() {
+    super.initState();
+    _remoteMessageSub = RemoteApiClient.instance.messages.listen((event) {
+      if (!mounted) {
+        return;
+      }
+      if (event.fromUserId == widget.chat.id) {
+        setState(() {});
+      }
+    });
+  }
 
   @override
   void dispose() {
+    _remoteMessageSub?.cancel();
     messageController.dispose();
     super.dispose();
   }
@@ -4104,34 +5585,110 @@ class CallDetailScreen extends StatelessWidget {
   }
 }
 
-class ProfileEditScreen extends StatelessWidget {
+class ProfileEditScreen extends StatefulWidget {
   const ProfileEditScreen({
     super.key,
     required this.palette,
     required this.strings,
+    required this.account,
   });
 
   final BigHeadPalette palette;
   final AppStrings strings;
+  final AccountProfile account;
+
+  @override
+  State<ProfileEditScreen> createState() => _ProfileEditScreenState();
+}
+
+class _ProfileEditScreenState extends State<ProfileEditScreen> {
+  late final TextEditingController name;
+  late final TextEditingController bio;
+  late final TextEditingController phone;
+  late final TextEditingController email;
+  String? avatarBase64;
+
+  @override
+  void initState() {
+    super.initState();
+    name = TextEditingController(text: widget.account.name);
+    bio = TextEditingController(text: widget.account.bio);
+    phone = TextEditingController(text: widget.account.phone);
+    email = TextEditingController(text: widget.account.email);
+    avatarBase64 = widget.account.avatarBase64;
+  }
+
+  @override
+  void dispose() {
+    name.dispose();
+    bio.dispose();
+    phone.dispose();
+    email.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
+    final palette = widget.palette;
+    final strings = widget.strings;
+    final preview = AccountProfile(
+      email: email.text,
+      name: name.text,
+      phone: phone.text,
+      bio: bio.text,
+      qrCode: widget.account.qrCode,
+      avatarBase64: avatarBase64,
+    );
+
     return DetailScaffold(
       title: strings.profileEdit,
       palette: palette,
       body: Column(
         children: [
-          InitialAvatar(name: 'Matin R.', palette: palette, size: 72),
+          AccountAvatar(
+            account: preview,
+            palette: palette,
+            fallbackName: name.text.isEmpty ? email.text : name.text,
+            size: 72,
+          ),
+          const SizedBox(height: 8),
+          TextButton.icon(
+            onPressed: () async {
+              final picked = await AppPlatformService.pickImageBase64();
+              if (picked != null && picked.isNotEmpty) {
+                setState(() => avatarBase64 = picked);
+              }
+            },
+            icon: const Icon(Icons.photo_camera_outlined),
+            label: Text(strings.isFa ? 'انتخاب عکس' : 'Pick photo'),
+          ),
           const SizedBox(height: 16),
-          _EditField(palette: palette, label: strings.username, value: '@bighead'),
+          _FormFieldCard(
+            palette: palette,
+            label: strings.username,
+            controller: name,
+          ),
           const SizedBox(height: 12),
-          _EditField(palette: palette, label: strings.bio, value: strings.isFa
-              ? 'مدیر محصول و طراح تجربه کاربری'
-              : 'Product manager and UX lead'),
+          _FormFieldCard(
+            palette: palette,
+            label: strings.bio,
+            controller: bio,
+            maxLines: 3,
+          ),
           const SizedBox(height: 12),
-          _EditField(palette: palette, label: strings.email, value: 'matin@bighead.app'),
+          _FormFieldCard(
+            palette: palette,
+            label: strings.email,
+            controller: email,
+            keyboardType: TextInputType.emailAddress,
+          ),
           const SizedBox(height: 12),
-          _EditField(palette: palette, label: strings.phone, value: '+98 912 111 1111'),
+          _FormFieldCard(
+            palette: palette,
+            label: strings.phone,
+            controller: phone,
+            keyboardType: TextInputType.phone,
+          ),
           const SizedBox(height: 16),
           Row(
             children: [
@@ -4144,63 +5701,21 @@ class ProfileEditScreen extends StatelessWidget {
               const SizedBox(width: 12),
               Expanded(
                 child: ElevatedButton(
-                  onPressed: () => Navigator.of(context).pop(),
+                  onPressed: () {
+                    AppDatabase.instance.updateCurrentProfile(
+                      email: email.text.trim(),
+                      name: name.text.trim(),
+                      phone: phone.text.trim(),
+                      bio: bio.text.trim(),
+                      avatarBase64: avatarBase64,
+                    );
+                    Navigator.of(context).pop();
+                  },
                   child: Text(strings.save),
                 ),
               ),
             ],
           ),
-        ],
-      ),
-    );
-  }
-}
-
-class _EditField extends StatelessWidget {
-  const _EditField({
-    required this.palette,
-    required this.label,
-    required this.value,
-  });
-
-  final BigHeadPalette palette;
-  final String label;
-  final String value;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: palette.card,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: palette.border),
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  label,
-                  style: Theme.of(context)
-                      .textTheme
-                      .bodyMedium
-                      ?.copyWith(color: palette.muted),
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  value,
-                  style: Theme.of(context)
-                      .textTheme
-                      .titleMedium
-                      ?.copyWith(color: palette.ink),
-                ),
-              ],
-            ),
-          ),
-          Icon(Icons.edit_outlined, color: palette.muted),
         ],
       ),
     );
@@ -4260,6 +5775,247 @@ class DetailScaffold extends StatelessWidget {
         ],
       ),
     );
+  }
+}
+
+class NotificationsCenterScreen extends StatelessWidget {
+  const NotificationsCenterScreen({
+    super.key,
+    required this.palette,
+    required this.strings,
+  });
+
+  final BigHeadPalette palette;
+  final AppStrings strings;
+
+  @override
+  Widget build(BuildContext context) {
+    final notifications = AppDatabase.instance.callsNotifier.value
+        .take(10)
+        .map((c) => '${c.name} • ${c.time}')
+        .toList();
+    return DetailScaffold(
+      title: strings.notifications,
+      palette: palette,
+      body: notifications.isEmpty
+          ? Text(
+              strings.isFa ? 'اعلانی وجود ندارد.' : 'No notifications.',
+              style: Theme.of(context)
+                  .textTheme
+                  .bodyMedium
+                  ?.copyWith(color: palette.muted),
+            )
+          : Column(
+              children: notifications
+                  .map(
+                    (n) => Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: SettingsInlineRow(
+                        palette: palette,
+                        label: n,
+                        value: strings.isFa ? 'مشاهده' : 'Open',
+                        onTap: () {},
+                      ),
+                    ),
+                  )
+                  .toList(),
+            ),
+    );
+  }
+}
+
+class MyQrScreen extends StatefulWidget {
+  const MyQrScreen({
+    super.key,
+    required this.palette,
+    required this.strings,
+  });
+
+  final BigHeadPalette palette;
+  final AppStrings strings;
+
+  @override
+  State<MyQrScreen> createState() => _MyQrScreenState();
+}
+
+class _MyQrScreenState extends State<MyQrScreen> {
+  final scanController = TextEditingController();
+
+  @override
+  void dispose() {
+    scanController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final user = AppDatabase.instance.currentUserNotifier.value;
+    final p = widget.palette;
+    final s = widget.strings;
+    if (user == null) {
+      return DetailScaffold(
+        title: 'QR',
+        palette: p,
+        body: Text(
+          s.isFa ? 'کاربر فعال نیست.' : 'No active user.',
+          style: Theme.of(context).textTheme.bodyMedium,
+        ),
+      );
+    }
+
+    return DetailScaffold(
+      title: 'QR',
+      palette: p,
+      body: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Center(child: _PseudoQrCard(code: user.qrCode, palette: p)),
+          const SizedBox(height: 10),
+          Center(
+            child: SelectableText(
+              user.qrCode,
+              style: Theme.of(context)
+                  .textTheme
+                  .bodyMedium
+                  ?.copyWith(color: p.muted),
+            ),
+          ),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton(
+              onPressed: () async {
+                await Clipboard.setData(ClipboardData(text: user.qrCode));
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(
+                        s.isFa ? 'کد QR کپی شد.' : 'QR code copied.',
+                      ),
+                    ),
+                  );
+                }
+              },
+              child: Text(s.isFa ? 'کپی کد' : 'Copy code'),
+            ),
+          ),
+          const SizedBox(height: 14),
+          _FormFieldCard(
+            palette: p,
+            label: s.isFa ? 'کد طرف مقابل را وارد کنید' : 'Enter other user QR code',
+            controller: scanController,
+          ),
+          const SizedBox(height: 8),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton(
+              onPressed: () {
+                final found = AppDatabase.instance.findAccountByQr(scanController.text);
+                if (found == null) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(
+                        s.isFa ? 'کاربری با این کد یافت نشد.' : 'No user found for this code.',
+                      ),
+                    ),
+                  );
+                  return;
+                }
+                if (found.email == user.email) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(
+                        s.isFa ? 'این کد متعلق به خود شماست.' : 'This is your own code.',
+                      ),
+                    ),
+                  );
+                  return;
+                }
+                final name = found.name.isEmpty ? found.email.split('@').first : found.name;
+                final contact = Contact(
+                  name: name,
+                  role: s.isFa ? 'کاربر بیگ هدز' : 'BigHeads user',
+                  company: 'BigHeads',
+                  status: s.online,
+                  phone: found.phone,
+                  email: found.email,
+                  location: '',
+                  lastSeen: s.isFa ? 'اکنون' : 'Now',
+                  tags: const ['QR'],
+                  notes: '',
+                );
+                if (!AppDatabase.instance.contactExists(contact.phone, contact.email)) {
+                  AppDatabase.instance.addContact(contact);
+                }
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      s.isFa ? 'مخاطب اضافه شد.' : 'Contact added.',
+                    ),
+                  ),
+                );
+              },
+              child: Text(s.isFa ? 'افزودن مخاطب با QR' : 'Add contact by QR'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PseudoQrCard extends StatelessWidget {
+  const _PseudoQrCard({required this.code, required this.palette});
+
+  final String code;
+  final BigHeadPalette palette;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 220,
+      height: 220,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: palette.card,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: palette.border),
+      ),
+      child: CustomPaint(
+        painter: _PseudoQrPainter(code, palette),
+      ),
+    );
+  }
+}
+
+class _PseudoQrPainter extends CustomPainter {
+  _PseudoQrPainter(this.code, this.palette);
+  final String code;
+  final BigHeadPalette palette;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final bytes = utf8.encode(code);
+    const n = 21;
+    final cell = size.width / n;
+    final paint = Paint()..color = palette.ink;
+    for (int y = 0; y < n; y++) {
+      for (int x = 0; x < n; x++) {
+        final idx = (x + y * n) % bytes.length;
+        final bit = ((bytes[idx] + x * 7 + y * 13) % 2) == 0;
+        if (bit) {
+          canvas.drawRect(
+            Rect.fromLTWH(x * cell, y * cell, cell - 0.6, cell - 0.6),
+            paint,
+          );
+        }
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _PseudoQrPainter oldDelegate) {
+    return oldDelegate.code != code;
   }
 }
 

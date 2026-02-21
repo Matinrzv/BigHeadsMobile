@@ -17,6 +17,35 @@ pluginManagement {
     }
 }
 
+dependencyResolutionManagement {
+    repositoriesMode.set(org.gradle.api.initialization.resolve.RepositoriesMode.PREFER_SETTINGS)
+    repositories {
+        exclusiveContent {
+            forRepository {
+                maven(url = uri("https://storage.googleapis.com/download.flutter.io"))
+            }
+            filter {
+                includeGroup("io.flutter")
+                includeGroupByRegex("io\\.flutter\\..*")
+            }
+        }
+        exclusiveContent {
+            forRepository {
+                google()
+            }
+            filter {
+                includeGroup("com.google.android.gms")
+                includeGroup("com.google.firebase")
+                includeGroup("com.google.android.material")
+                includeGroupByRegex("com\\.android\\..*")
+                includeGroupByRegex("androidx\\..*")
+                includeGroup("com.android.support")
+            }
+        }
+        mavenCentral()
+    }
+}
+
 plugins {
     id("dev.flutter.flutter-plugin-loader") version "1.0.0"
     id("com.android.application") version "8.11.1" apply false
