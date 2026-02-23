@@ -187,7 +187,7 @@ class RemoteApiClient {
       return <RemoteUser>[];
     }
     return rows
-        .whereType<Map>()
+        .whereType<Map<String, dynamic>>()
         .map((m) => RemoteUser(
               userId: '${m['userId'] ?? ''}',
               email: '${m['email'] ?? ''}',
@@ -229,7 +229,7 @@ class RemoteApiClient {
       return <RemoteIncomingMessage>[];
     }
     return rows
-        .whereType<Map>()
+        .whereType<Map<String, dynamic>>()
         .map((m) => RemoteIncomingMessage(
               fromUserId: '${m['fromUserId'] ?? ''}',
               fromName: '${m['fromName'] ?? ''}',

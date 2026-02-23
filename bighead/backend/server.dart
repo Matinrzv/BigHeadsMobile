@@ -279,7 +279,7 @@ class _Db {
     final usersRaw = decoded['users'];
     if (usersRaw is List) {
       users = usersRaw
-          .whereType<Map>()
+          .whereType<Map<String, dynamic>>()
           .map((e) => Map<String, dynamic>.from(e))
           .toList();
     }
@@ -296,7 +296,7 @@ class _Db {
     if (messagesRaw is Map) {
       messages = messagesRaw.map((k, v) {
         final list = v is List
-            ? v.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList()
+            ? v.whereType<Map<String, dynamic>>().map((e) => Map<String, dynamic>.from(e)).toList()
             : <Map<String, dynamic>>[];
         return MapEntry('$k', list);
       });

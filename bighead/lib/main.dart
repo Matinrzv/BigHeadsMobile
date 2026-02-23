@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
-import 'dart:typed_data';
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
@@ -378,7 +377,7 @@ class _HomeShellState extends State<HomeShell> {
                   onSearchTap: () {},
                   onQrTap: () {
                     Navigator.of(context).push(
-                      MaterialPageRoute(
+                      MaterialPageRoute<void>(
                         builder: (_) => MyQrScreen(
                           palette: palette,
                           strings: strings,
@@ -388,7 +387,7 @@ class _HomeShellState extends State<HomeShell> {
                   },
                   onNotifyTap: () {
                     Navigator.of(context).push(
-                      MaterialPageRoute(
+                      MaterialPageRoute<void>(
                         builder: (_) => NotificationsCenterScreen(
                           palette: palette,
                           strings: strings,
@@ -751,7 +750,7 @@ class BigHeadBackground extends StatelessWidget {
           height: 140,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
-            color: palette.blue.withOpacity(0.06),
+            color: palette.blue.withValues(alpha: 0.06),
           ),
         ),
       ),
@@ -1181,7 +1180,7 @@ class _InboxScreenState extends State<InboxScreen> {
                         palette: palette,
                         onTap: () {
                           Navigator.of(context).push(
-                            MaterialPageRoute(
+                            MaterialPageRoute<void>(
                               builder: (_) => ChatScreen(
                                 chat: chat,
                                 palette: palette,
@@ -1547,7 +1546,7 @@ class AppDatabase {
     final contactsRaw = state['contacts'];
     if (contactsRaw is List) {
       contactsNotifier.value = contactsRaw
-          .whereType<Map>()
+          .whereType<Map<String, dynamic>>()
           .map((item) => _contactFromMap(Map<String, dynamic>.from(item)))
           .toList();
     }
@@ -1555,7 +1554,7 @@ class AppDatabase {
     final chatsRaw = state['chats'];
     if (chatsRaw is List) {
       chatsNotifier.value = chatsRaw
-          .whereType<Map>()
+          .whereType<Map<String, dynamic>>()
           .map((item) => _chatFromMap(Map<String, dynamic>.from(item)))
           .toList();
     }
@@ -1563,7 +1562,7 @@ class AppDatabase {
     final callsRaw = state['calls'];
     if (callsRaw is List) {
       callsNotifier.value = callsRaw
-          .whereType<Map>()
+          .whereType<Map<String, dynamic>>()
           .map((item) => _callFromMap(Map<String, dynamic>.from(item)))
           .toList();
     }
@@ -1571,7 +1570,7 @@ class AppDatabase {
     final groupsRaw = state['groups'];
     if (groupsRaw is List) {
       groupsNotifier.value = groupsRaw
-          .whereType<Map>()
+          .whereType<Map<String, dynamic>>()
           .map((item) => _groupFromMap(Map<String, dynamic>.from(item)))
           .toList();
     }
@@ -1595,7 +1594,7 @@ class AppDatabase {
       messagesRaw.forEach((key, value) {
         if (value is List) {
           _messagesByChatId['$key'] = value
-              .whereType<Map>()
+              .whereType<Map<String, dynamic>>()
               .map((m) => _messageFromMap(Map<String, dynamic>.from(m)))
               .toList();
         }
@@ -1605,7 +1604,7 @@ class AppDatabase {
     final accountsRaw = state['accounts'];
     if (accountsRaw is List) {
       accountsNotifier.value = accountsRaw
-          .whereType<Map>()
+          .whereType<Map<String, dynamic>>()
           .map((m) => _accountFromMap(Map<String, dynamic>.from(m)))
           .toList();
     }
@@ -2362,7 +2361,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
                   icon: Icons.person_add_alt,
                   onTap: () async {
                     final created = await Navigator.of(context).push<bool>(
-                      MaterialPageRoute(
+                      MaterialPageRoute<bool>(
                         builder: (_) => NewContactScreen(
                           palette: palette,
                           strings: strings,
@@ -2383,7 +2382,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
                   icon: Icons.send_outlined,
                   onTap: () {
                     Navigator.of(context).push(
-                      MaterialPageRoute(
+                      MaterialPageRoute<void>(
                         builder: (_) => InviteScreen(
                           palette: palette,
                           strings: strings,
@@ -2401,7 +2400,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
                   icon: Icons.group_outlined,
                   onTap: () {
                     Navigator.of(context).push(
-                      MaterialPageRoute(
+                      MaterialPageRoute<void>(
                         builder: (_) => GroupsScreen(
                           palette: palette,
                           strings: strings,
@@ -2460,7 +2459,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
     AppStrings strings,
   ) {
     Navigator.of(context).push(
-      MaterialPageRoute(
+      MaterialPageRoute<void>(
         builder: (_) => ContactDetailScreen(
           contact: contact,
           palette: palette,
@@ -2563,7 +2562,7 @@ class _ContactCard extends StatelessWidget {
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
               decoration: BoxDecoration(
-                color: palette.blue.withOpacity(0.1),
+                color: palette.blue.withValues(alpha: 0.1),
                 borderRadius: BorderRadius.circular(10),
               ),
               child: Text(
@@ -2636,7 +2635,7 @@ class CallsScreen extends StatelessWidget {
                         ),
                         onTap: () {
                           Navigator.of(context).push(
-                            MaterialPageRoute(
+                            MaterialPageRoute<void>(
                               builder: (_) => CallDetailScreen(
                                 item: call,
                                 palette: palette,
@@ -2716,7 +2715,7 @@ class SettingsScreen extends StatelessWidget {
             trailing: Icon(Icons.chevron_right, color: palette.muted),
             onTap: () {
               Navigator.of(context).push(
-                MaterialPageRoute(
+                MaterialPageRoute<void>(
                   builder: (_) => LanguageScreen(
                     palette: palette,
                     strings: strings,
@@ -2736,7 +2735,7 @@ class SettingsScreen extends StatelessWidget {
             trailing: Icon(Icons.chevron_right, color: palette.muted),
             onTap: () {
               Navigator.of(context).push(
-                MaterialPageRoute(
+                MaterialPageRoute<void>(
                   builder: (_) => NotificationsSettingsScreen(
                     palette: palette,
                     strings: strings,
@@ -2754,7 +2753,7 @@ class SettingsScreen extends StatelessWidget {
             trailing: Icon(Icons.chevron_right, color: palette.muted),
             onTap: () {
               Navigator.of(context).push(
-                MaterialPageRoute(
+                MaterialPageRoute<void>(
                   builder: (_) => PrivacySettingsScreen(
                     palette: palette,
                     strings: strings,
@@ -2772,7 +2771,7 @@ class SettingsScreen extends StatelessWidget {
             trailing: Icon(Icons.chevron_right, color: palette.muted),
             onTap: () {
               Navigator.of(context).push(
-                MaterialPageRoute(
+                MaterialPageRoute<void>(
                   builder: (_) => AppearanceSettingsScreen(
                     palette: palette,
                     strings: strings,
@@ -2790,7 +2789,7 @@ class SettingsScreen extends StatelessWidget {
             trailing: Icon(Icons.chevron_right, color: palette.muted),
             onTap: () {
               Navigator.of(context).push(
-                MaterialPageRoute(
+                MaterialPageRoute<void>(
                   builder: (_) => AboutScreen(
                     palette: palette,
                     strings: strings,
@@ -2841,7 +2840,7 @@ class SettingsTile extends StatelessWidget {
               width: 40,
               height: 40,
               decoration: BoxDecoration(
-                color: palette.blue.withOpacity(0.1),
+                color: palette.blue.withValues(alpha: 0.1),
                 borderRadius: BorderRadius.circular(10),
               ),
               child: Icon(icon, color: palette.blue),
@@ -3843,7 +3842,7 @@ class ProfileScreen extends StatelessWidget {
                 TextButton(
                   onPressed: () {
                     Navigator.of(context).push(
-                      MaterialPageRoute(
+                      MaterialPageRoute<void>(
                         builder: (_) => ProfileEditScreen(
                           palette: palette,
                           strings: strings,
@@ -4219,7 +4218,7 @@ class InitialAvatar extends StatelessWidget {
       width: size,
       height: size,
       decoration: BoxDecoration(
-        color: palette.blue.withOpacity(0.12),
+        color: palette.blue.withValues(alpha: 0.12),
         borderRadius: BorderRadius.circular(12),
         border: Border.all(color: palette.border),
       ),
@@ -4679,7 +4678,7 @@ class ContactDetailScreen extends StatelessWidget {
                 onTap: () {
                   final chat = AppDatabase.instance.createOrGetChat(contact, strings);
                   Navigator.of(context).push(
-                    MaterialPageRoute(
+                    MaterialPageRoute<void>(
                       builder: (_) => ChatScreen(
                         chat: chat,
                         palette: palette,
@@ -5246,7 +5245,7 @@ class _GroupsScreenState extends State<GroupsScreen> {
                 trailing: Icon(Icons.chevron_right, color: palette.muted),
                 onTap: () {
                   Navigator.of(context).push(
-                    MaterialPageRoute(
+                    MaterialPageRoute<void>(
                       builder: (_) => GroupDetailScreen(
                         group: group,
                         palette: palette,
