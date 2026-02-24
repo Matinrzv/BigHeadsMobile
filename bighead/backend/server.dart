@@ -1,13 +1,16 @@
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
+import 'package:path/path.dart' as p;
 
 Future<void> main(List<String> args) async {
-  final port = args.isNotEmpty ? int.tryParse(args.first) ?? 8080 : 8080;
-  final dataFile = File('backend/data.json');
-  if (!dataFile.existsSync()) {
-    dataFile.createSync(recursive: true);
-    dataFile.writeAsStringSync(jsonEncode(<String, dynamic>{
+  final basePort = args.isNotEmpty ? int.tryParse(args.first) ?? 8080 : 8080;
+  final scriptDir = p.dirname(Platform.script.toFilePath());
+  final dataFile = File(p.join(scriptDir, 'backend', 'data.json'));
+
+  if (!await dataFile.exists()) {
+    await dataFile.create(recursive: true);
+    await dataFile.writeAsString(jsonEncode(<String, dynamic>{
       'users': <Map<String, dynamic>>[],
       'contacts': <String, List<String>>{},
       'messages': <String, List<Map<String, dynamic>>>{},
@@ -20,8 +23,24 @@ Future<void> main(List<String> args) async {
   final sessions = <String, String>{}; // token -> userId
   final sockets = <String, List<WebSocket>>{}; // userId -> sockets
 
-  final server = await HttpServer.bind(InternetAddress.anyIPv4, port);
-  stdout.writeln('BigHeads realtime server running on http://0.0.0.0:$port');
+  HttpServer? server;
+  int port = basePort;
+  const int maxAttempts = 100;
+  for (int i = 0; i < maxAttempts; i++, port++) {
+    try {
+      server = await HttpServer.bind(InternetAddress.anyIPv4, port);
+      break;
+    } catch (e) {
+      if (e is! SocketException) rethrow;
+    }
+  }
+
+  if (server == null) {
+    stderr.writeln('Failed to bind any port in range $basePort-${basePort + maxAttempts - 1}');
+    exit(1);
+  }
+
+  stdout.writeln('BigHeads realtime server running on http://0.0.0.0:$port  (data: ${dataFile.path})');
 
   await for (final req in server) {
     stdout.writeln('[REQ] ${req.method} ${req.uri.path}${req.uri.hasQuery ? '?${req.uri.query}' : ''}');
